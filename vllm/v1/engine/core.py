@@ -85,7 +85,7 @@ class EngineCore:
     ):
         # plugins need to be loaded at the engine/scheduler level too
         from vllm.plugins import load_general_plugins
-
+        self.count = 0
         load_general_plugins()
 
         self.vllm_config = vllm_config
@@ -1145,7 +1145,6 @@ class DPEngineCoreProc(EngineCoreProc):
         while True:
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
-
             # 2) Step the engine core.
             executed = self._process_engine_step()
             self._maybe_publish_request_counts()
@@ -1164,6 +1163,7 @@ class DPEngineCoreProc(EngineCoreProc):
             self.engines_running = self._has_global_unfinished_reqs(
                 local_unfinished_reqs
             )
+            self.scheduler.running_gather(self.dp_group)
 
             if not self.engines_running:
                 if self.dp_rank == 0 or not self.has_coordinator:

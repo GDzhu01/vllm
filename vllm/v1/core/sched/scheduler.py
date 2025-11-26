@@ -34,7 +34,8 @@ from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
-
+import torch.distributed as dist
+import torch
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
@@ -174,6 +175,13 @@ class Scheduler(SchedulerInterface):
             dcp_world_size=self.dcp_world_size,
         )
         self.use_pp = self.parallel_config.pipeline_parallel_size > 1
+        self.gather_list = [
+            torch.tensor([0], dtype=torch.int, device="cpu") for _ in range(self.vllm_config.parallel_config.data_parallel_size)
+        ]
+
+    def running_gather(self, dp_group):
+        runing_tensor = torch.tensor([len(self.running)], dtype=torch.int, device="cpu")
+        dist.all_gather(self.gather_list, runing_tensor, group=dp_group)
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
@@ -351,8 +359,12 @@ class Scheduler(SchedulerInterface):
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
+                    break                                                          # [6000,  6000] MTP=3  E
+                max_value = max(t.item() for t in self.gather_list)                # [21d +3p    24d]
+                if max_value == self.max_num_running_reqs: ## self.count > 阈值   [24 24 24 24]  24     running [2,3,4]
+                    # TODO counter 超时机制  self
                     break
-
+                # self.count 清0
                 request = self.waiting.peek_request()
 
                 # KVTransfer: skip request if still waiting for remote kvs.
